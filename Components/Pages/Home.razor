@@ -1,0 +1,320 @@
+@page "/"
+@using System.Net
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IDisposable
+@inject IZiurApiService ZiurApi
+@inject ILogger<Home> Logger
+
+<PageTitle>Panel de inventario | Ziur</PageTitle>
+
+<div class="app-frame">
+    <header class="topbar">
+        <a class="brand" href="/" aria-label="Ziur Prueba técnica, inicio">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 64 64" width="24" height="24" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"><path d="M32 10 52 21v22L32 54 12 43V21zM12 21l20 11 20-11M32 32v22"/></svg>
+            </span>
+            <span><strong>ZIUR</strong><small>PRUEBA TÉCNICA</small></span>
+        </a>
+        <div class="topbar-right">
+            <span class="connection-dot"></span>
+            <span>Consulta de API</span>
+        </div>
+    </header>
+
+    <main class="page-shell">
+        <div class="page-heading">
+            <div>
+                <p class="eyebrow">OPERACIONES · DATOS EN VIVO</p>
+                <h1>Catálogo de documentos</h1>
+                <p class="subtitle">Datos obtenidos desde el servicio REST de Ziur.</p>
+            </div>
+            <button class="btn btn-primary" @onclick="LoadAsync" disabled="@_loading">
+                <span aria-hidden="true">↻</span> Actualizar
+            </button>
+        </div>
+
+        @if (_loading)
+        {
+            <section class="status-card" role="status" aria-live="polite">
+                <span class="spinner"></span>
+                <div><strong>Consultando Ziur…</strong><p>Estamos solicitando los datos al servicio.</p></div>
+            </section>
+        }
+        else if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <section class="status-card error-card" role="alert">
+                <span class="status-icon">!</span>
+                <div class="status-content">
+                    <strong>No fue posible cargar los datos</strong>
+                    <p>@_error</p>
+                    <button class="btn btn-secondary" @onclick="LoadAsync">Intentar de nuevo</button>
+                </div>
+            </section>
+        }
+        else if (_data is not null)
+        {
+            <section class="metric-row">
+                <div class="metric-card">
+                    <span class="metric-label">REGISTROS RECIBIDOS</span>
+                    <strong class="metric-number">@_data.Rows.Count.ToString("N0", CultureInfo.InvariantCulture)</strong>
+                    <span class="metric-note">En la respuesta actual</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">COLUMNAS DETECTADAS</span>
+                    <strong class="metric-number">@_data.Columns.Count.ToString("N0", CultureInfo.InvariantCulture)</strong>
+                    <span class="metric-note">Derivadas del JSON real</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">ESTADO</span>
+                    <strong class="state-ok"><span class="connection-dot"></span> Conectado</strong>
+                    <span class="metric-note">Última consulta: @_lastUpdated</span>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h2>Registros</h2>
+                        <p class="panel-description">Busca en todos los campos y selecciona una columna para ordenar.</p>
+                    </div>
+                    <span class="result-count">@FilteredRows.Count.ToString("N0", CultureInfo.InvariantCulture) resultados</span>
+                </div>
+
+                <div class="table-tools">
+                    <label class="search-box">
+                        <span aria-hidden="true">⌕</span>
+                        <input type="search" placeholder="Buscar en los datos…" @bind="Search" @bind:event="oninput" aria-label="Buscar en todos los campos" />
+                        @if (!string.IsNullOrEmpty(_search))
+                        {
+                            <button class="clear-search" @onclick="ClearSearch" aria-label="Limpiar búsqueda">×</button>
+                        }
+                    </label>
+                    <span class="table-hint">Origen JSON: <code>@_data.JsonPath</code></span>
+                </div>
+
+                @if (_data.Rows.Count == 0)
+                {
+                    <div class="empty-state">
+                        <span class="empty-symbol">⌕</span>
+                        <strong>No se encontraron registros</strong>
+                        <p>La API respondió correctamente, pero no devolvió filas para mostrar.</p>
+                    </div>
+                }
+                else if (FilteredRows.Count == 0)
+                {
+                    <div class="empty-state">
+                        <span class="empty-symbol">⌕</span>
+                        <strong>Sin coincidencias</strong>
+                        <p>Prueba con otro término de búsqueda.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    @foreach (var column in _data.Columns)
+                                    {
+                                        <th scope="col">
+                                            <button class="sort-button" @onclick="() => SortBy(column)">
+                                                @column
+                                                <span class="sort-indicator">@(string.Equals(_sortColumn, column, StringComparison.OrdinalIgnoreCase) ? (_sortAscending ? "↑" : "↓") : "↕")</span>
+                                            </button>
+                                        </th>
+                                    }
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in PagedRows)
+                                {
+                                    <tr>
+                                        @foreach (var column in _data.Columns)
+                                        {
+                                            <td title="@GetCell(row, column)">
+                                                @if (IsBoolean(GetCell(row, column)))
+                                                {
+                                                    var on = string.Equals(GetCell(row, column), "true", StringComparison.OrdinalIgnoreCase);
+                                                    <span class="badge @(on ? "badge-on" : "badge-off")">@(on ? "Activo" : "Inactivo")</span>
+                                                }
+                                                else
+                                                {
+                                                    @GetCell(row, column)
+                                                }
+                                            </td>
+                                        }
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="table-footer">
+                        <span>Mostrando @PageStart–@PageEnd de @FilteredRows.Count registros</span>
+                        <div class="pagination">
+                            <button class="btn btn-secondary btn-small" @onclick="PreviousPage" disabled="@(_page <= 0)">Anterior</button>
+                            <span>Página @(_page + 1) de @TotalPages</span>
+                            <button class="btn btn-secondary btn-small" @onclick="NextPage" disabled="@(_page + 1 >= TotalPages)">Siguiente</button>
+                        </div>
+                    </div>
+                }
+                <div class="data-footnote">
+                    <span>Tipo de respuesta detectado: <strong>@_data.RootKind</strong></span>
+                    <span>Los nombres de las columnas se obtienen del JSON; no se presuponen campos.</span>
+                </div>
+            </section>
+        }
+        else
+        {
+            <section class="status-card">
+                <div><strong>Listo para consultar</strong><p>Presiona actualizar para solicitar los datos a Ziur.</p></div>
+                <button class="btn btn-primary" @onclick="LoadAsync">Cargar datos</button>
+            </section>
+        }
+
+        <footer class="page-footer">
+            <span>Ziur Inventario · Panel de consulta</span>
+            <span>La credencial se mantiene en el servidor.</span>
+        </footer>
+    </main>
+</div>
+
+@code {
+    private ApiTableData? _data;
+    private bool _loading;
+    private string? _error;
+    private string _search = "";
+    private List<IReadOnlyDictionary<string, string>> _filtered = [];
+
+    private string Search
+    {
+        get => _search;
+        set
+        {
+            _search = value;
+            _page = 0;
+            ApplyView();
+        }
+    }
+
+    private string? _sortColumn;
+    private bool _sortAscending = true;
+    private int _page;
+    private const int PageSize = 10;
+    private string _lastUpdated = "—";
+
+    private List<IReadOnlyDictionary<string, string>> FilteredRows => _filtered;
+
+    private void ApplyView()
+    {
+        if (_data is null)
+        {
+            _filtered = [];
+            return;
+        }
+
+        IEnumerable<IReadOnlyDictionary<string, string>> query = _data.Rows;
+        var term = _search.Trim();
+
+        if (term.Length > 0)
+            query = query.Where(row => row.Values.Any(value =>
+                value.Contains(term, StringComparison.OrdinalIgnoreCase)));
+
+        if (!string.IsNullOrWhiteSpace(_sortColumn))
+        {
+            var column = _sortColumn;
+            query = _sortAscending
+                ? query.OrderBy(row => GetCell(row, column), CellComparer)
+                : query.OrderByDescending(row => GetCell(row, column), CellComparer);
+        }
+
+        _filtered = query.ToList();
+    }
+
+    // Orden natural: "2" antes que "10" cuando la columna contiene números.
+    private static readonly StringComparer CellComparer = StringComparer.Create(CultureInfo.CurrentCulture, CompareOptions.IgnoreCase | CompareOptions.NumericOrdering);
+
+    private static bool IsBoolean(string value) =>
+        string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
+
+    private void ClearSearch() => Search = string.Empty;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(FilteredRows.Count / (double)PageSize));
+    private int PageStart => FilteredRows.Count == 0 ? 0 : _page * PageSize + 1;
+    private int PageEnd => Math.Min((_page + 1) * PageSize, FilteredRows.Count);
+    private IEnumerable<IReadOnlyDictionary<string, string>> PagedRows =>
+        FilteredRows.Skip(_page * PageSize).Take(PageSize);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private CancellationTokenSource? _cts;
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+
+    private async Task LoadAsync()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        var token = _cts.Token;
+
+        _loading = true;
+        _error = null;
+        try
+        {
+            _data = await ZiurApi.GetDocumentsAsync(token);
+            _lastUpdated = DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss", CultureInfo.InvariantCulture);
+            _page = 0;
+            if (_data.Columns.Count > 0 && string.IsNullOrWhiteSpace(_sortColumn))
+                _sortColumn = _data.Columns[0];
+            ApplyView();
+        }
+        catch (ZiurApiException ex)
+        {
+            _error = ex.Message;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (TaskCanceledException)
+        {
+            _error = "La consulta superó el tiempo de espera. Verifica la conexión e inténtalo de nuevo.";
+        }
+        catch (HttpRequestException)
+        {
+            _error = "No se pudo establecer conexión con Ziur. Comprueba la red y que el servidor esté disponible.";
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error inesperado al consultar Ziur.");
+            _error = "Ocurrió un error inesperado al consultar los datos. Inténtalo de nuevo.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void SortBy(string column)
+    {
+        if (string.Equals(_sortColumn, column, StringComparison.OrdinalIgnoreCase))
+            _sortAscending = !_sortAscending;
+        else
+        {
+            _sortColumn = column;
+            _sortAscending = true;
+        }
+        _page = 0;
+        ApplyView();
+    }
+
+    private void PreviousPage() => _page = Math.Max(0, _page - 1);
+    private void NextPage() => _page = Math.Min(TotalPages - 1, _page + 1);
+    private static string GetCell(IReadOnlyDictionary<string, string> row, string column) =>
+        row.TryGetValue(column, out var value) ? value : "";
+}
